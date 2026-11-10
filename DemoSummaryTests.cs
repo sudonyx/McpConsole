@@ -68,6 +68,15 @@ internal static class DemoSummaryTests
         results[DemoSummary.Sources[0]] = JsonSerializer.SerializeToElement(new { content = new[]
         { new { type = "text", text = JsonSerializer.Serialize(new { data = new { results = companies, total = 5 } }) } } });
         if (!DemoSummary.Build(results).Complete) throw new Exception("JSON text envelope failed.");
+        results[DemoSummary.Sources[0]] = Result(new { results = companies.Select((c, i) => new
+            { id = 463655667952L + i, c.properties }), total = 5.0m });
+        results[DemoSummary.Sources[2]] = Result(new { records = opportunities, done = true, totalSize = 6.0m });
+        if (!DemoSummary.Build(results).Complete || DemoSummary.Build(results).Companies[3].OpenOpportunityValue != 60000)
+            throw new Exception("Live numeric ID or decimal count regression.");
+        results[DemoSummary.Sources[2]] = Result(new { records = opportunities, done = true, totalSize = 6.5m });
+        try { DemoSummary.Build(results); throw new Exception("Fractional record count accepted."); }
+        catch (InvalidOperationException) { }
+        results[DemoSummary.Sources[2]] = Result(new { records = opportunities, done = true, totalSize = 6.0m });
         results[DemoSummary.Sources[0]] = Result(new { unexpected = companies });
         try { DemoSummary.Build(results); throw new Exception("Unknown response shape accepted."); }
         catch (InvalidOperationException) { }

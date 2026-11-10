@@ -89,7 +89,7 @@ internal static class DemoSummary
         }
         if (rows.ValueKind != JsonValueKind.Array) throw new InvalidOperationException(source + " records must be an array.");
         var records = rows.EnumerateArray().Select(r => r.Clone()).ToArray();
-        var ids = records.Select(r => RequiredText(r, salesforce ? "Id" : "id")).ToArray();
+        var ids = records.Select(r => RecordId(r, salesforce ? "Id" : "id")).ToArray();
         if (ids.Distinct(StringComparer.Ordinal).Count() != ids.Length)
             throw new InvalidOperationException(source + " returned duplicate IDs; totals were not calculated.");
         if (salesforce)
@@ -97,16 +97,32 @@ internal static class DemoSummary
             if (!payload.TryGetProperty("done", out var done) || done.ValueKind != JsonValueKind.True ||
                 (payload.TryGetProperty("nextRecordsUrl", out var next) && next.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(next.GetString())))
                 notes.Add(source + ": completion is unconfirmed or more pages are available.");
-            if (payload.TryGetProperty("totalSize", out var size) && size.GetInt32() != records.Length)
+            if (payload.TryGetProperty("totalSize", out var size) && Count(size) != records.Length)
                 notes.Add(source + ": returned count differs from totalSize.");
         }
-        else if (!payload.TryGetProperty("total", out var total) || total.GetInt32() != records.Length ||
+        else if (!payload.TryGetProperty("total", out var total) || Count(total) != records.Length ||
             (payload.TryGetProperty("paging", out var paging) && paging.ValueKind == JsonValueKind.Object && paging.TryGetProperty("next", out _)))
             notes.Add(source + ": total count is missing, differs from returned count, or more pages are available.");
         return records;
     }
 
     private static JsonElement Properties(JsonElement record) => record.GetProperty("properties");
+    private static string RecordId(JsonElement record, string name)
+    {
+        var field = record.GetProperty(name);
+        if (field.ValueKind == JsonValueKind.Number && field.TryGetInt64(out var id) && id > 0)
+            return id.ToString(CultureInfo.InvariantCulture);
+        return RequiredText(record, name);
+    }
+
+    private static int Count(JsonElement field)
+    {
+        if (field.ValueKind != JsonValueKind.Number || !field.TryGetDecimal(out var count) ||
+            count < 0 || count > int.MaxValue || decimal.Truncate(count) != count)
+            throw new InvalidOperationException("Response count must be a nonnegative whole number.");
+        // Salesforce's MCP response serializes totalSize as e.g. 6.0.
+        return (int)count;
+    }
     private static string Text(JsonElement value, string name) => value.TryGetProperty(name, out var field) &&
         field.ValueKind == JsonValueKind.String ? field.GetString()! : "";
     private static string RequiredText(JsonElement value, string name)
