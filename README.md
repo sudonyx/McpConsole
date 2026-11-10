@@ -1,5 +1,75 @@
 # Hosted MCP console client
 
+## Read-only chat prototype
+
+The `chat` command keeps multiple MCP connections open and sends plain text/JSON messages to a configurable Chat Completions endpoint. The model proposes a capability ID. The application checks approval, verifies the current tool-definition hash, and supplies fixed arguments from local configuration. Each capability is one reviewed read with an exact account/query/record scope. Use multiple capabilities for pagination or separate reads. No model-generated SQL, SOQL, URLs or arguments are executed.
+
+This is a single-user console prototype. Approval in the configuration is a trusted operator assertion that the exact tool and arguments are read-only and suitably scoped. Review actual behavior, including query tools that can dispatch other actions. Server annotations and model descriptions do not establish approval. Protect the configuration from untrusted edits. Returned data and questions are sent to the selected model service. Use the fictional test accounts.
+
+### Connect and discover
+
+Copy `chat.example.json` to a local configuration file and replace the Salesforce endpoint with the endpoint you already tested. For each prefix (`HUBSPOT` and `SALESFORCE`), set these environment variables in the terminal running the app:
+
+- `<PREFIX>_CLIENT_ID`
+- `<PREFIX>_CLIENT_SECRET` if required, using the masked prompt pattern below
+- `<PREFIX>_REDIRECT_URI`, matching an existing registered loopback callback exactly
+- `<PREFIX>_SCOPES` if required
+
+Connections authorize sequentially, so the same callback can be reused if registered with both providers. The SDK retains tokens in memory for this process. Both connections remain open during chat.
+
+```powershell
+dotnet run -- discover chat.local.json discovery.local.json
+```
+
+Discovery creates a new file and refuses to overwrite an existing snapshot. Review the advertised schemas and configure capabilities such as the following shape. Values shown are placeholders, not verified HubSpot or Salesforce tool names or arguments.
+
+```json
+{
+  "id": "salesforce.demo-opportunities",
+  "serverId": "salesforce",
+  "tool": "EXACT_ADVERTISED_TOOL_NAME",
+  "definitionHash": "HASH_FROM_DISCOVERY",
+  "purpose": "Read the six DEMO opportunities with account, amount, stage and close date",
+  "approvedReadOnly": true,
+  "arguments": { "REPLACE_WITH_SCHEMA_VALID_ARGUMENTS": "EXACT_REVIEWED_VALUE" }
+}
+```
+
+Add reviewed entries to `capabilities` in the configuration. Include a HubSpot read for the seven contacts and company associations, and Salesforce reads for the demo accounts and opportunities. Select only needed fields. Ensure full pagination coverage. Arguments must match the advertised schema; this prototype fixes arguments rather than accepting a model argument object. A changed tool definition blocks execution until reviewed and repinned. The hash captures the advertised contract, not a guarantee about remote implementation behavior.
+
+### Run chat
+
+Set `CHAT_MODEL_ENDPOINT` to the full trusted Chat Completions URL, e.g. `https://api.openai.com/v1/chat/completions`, `CHAT_MODEL` to an available model supporting JSON object output, and `CHAT_MODEL_API_KEY` to the corresponding key. HTTP loopback is also accepted for a local compatible model service. Remote HTTPS model services may be used only with the intended credentials. Redirects are disabled to avoid forwarding credentials to another endpoint.
+
+```powershell
+$env:CHAT_MODEL_API_KEY = [System.Net.NetworkCredential]::new(
+    '', (Read-Host 'Model API key' -AsSecureString)
+).Password
+try {
+    dotnet run -- chat chat.local.json
+} finally {
+    Remove-Item Env:CHAT_MODEL_API_KEY
+}
+```
+
+Ask: `Which DEMO customers have an open Salesforce opportunity and a Chief Technology Officer contact in HubSpot?`
+
+Expected results are Alderbridge Analytics / Maya Ellison / 24,000 and Dunmere Robotics / Isla Rowan / 60,000, in the Salesforce account currency. Dunmere has two open opportunities. Closed won and closed lost records are excluded. Company DEMO references are present in both products. Check actual associations and record counts before accepting the result.
+
+Use `/clear` to remove conversation history and `/exit` to quit. Each question permits at most eight model rounds. Oversized results stop the request; narrow the configured reads. Tool errors are given to the model as flagged results. Transport/protocol errors stop the request without automatic replay. Execution IDs, catalog hashes, and result hashes print to the console. These are diagnostic references; there is no durable audit store, replay, authentication/tenancy boundary, business-policy evaluation, approval workflow, or guarantee that the model's answer is correct. Existing `list` and `call` commands remain operator utilities outside the chat controller. Run chat as a local prototype with trusted configuration and read-only OAuth scopes where available.
+
+When all three demo capability IDs above are configured, every chat turn requires fresh results from those capabilities before accepting a model answer. The application calculates a company summary first and prints it separately from model prose. It matches exact account/company names, matches contact email domains to company domains, recognizes the exact job title `Chief Technology Officer` case-insensitively, excludes `IsClosed=true`, and counts each opportunity once. Domain matching is the demo's explicit join convention; it does not verify actual contact/company associations. Duplicate IDs, ambiguous company names/domains, tool errors, missing required fields and unsupported result shapes block the verified summary. Missing numeric amounts or differing returned currency codes make affected totals unavailable. Without a currency code the total is labelled Salesforce account currency; the demo assumes one configured currency.
+
+Completeness is established for the scoped queries from HubSpot's `total` and Salesforce's `done`/`totalSize` and next-page fields. Unknown completion evidence or additional pages are marked partial/unconfirmed. A complete six-record response is valid even when two opportunities are closed. Counts and exclusions on incomplete responses describe only the returned records. No automatic pagination is performed. Only explicit JSON `results` (HubSpot) and `records` (Salesforce) envelopes are supported, directly or under `data`, either in structured content or a single JSON text block. Actual live envelope compatibility remains to be checked. The model is instructed to explain the application summary; its prose can still contain mistakes, so the separately printed application summary is the calculation reference.
+
+The prototype has not been connected to GenericHarness, DecisionApi or StateMachine. The capability check and execution boundary are the seams for that integration. Qwen compatibility needs validation against the chosen serving endpoint and model.
+
+### Offline verification
+
+`dotnet build` and `dotnet run --no-build -- self-test` check the build and controller regressions, including denied capabilities, model-supplied arguments, duplicate JSON fields, and stable discovery hashes. Live two-provider behavior requires credentials, review of actual tool definitions, and the acceptance query above.
+
+Do not commit local configuration, discovery snapshots or credentials; discovery can contain tenant-specific metadata. JSON mode reference: https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+
 A standalone .NET 10 CLI. It uses the official MCP C# SDK Core package (2.3.1) for Streamable HTTP, OAuth discovery, authorization-code exchange with S256 PKCE, and MCP messages. Each command opens its own session. The SDK keeps OAuth tokens in memory for the lifetime of the process.
 
 ## HubSpot setup on Windows

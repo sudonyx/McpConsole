@@ -1,0 +1,7 @@
+{
+  "servers": [
+    { "id": "hubspot", "environmentPrefix": "HUBSPOT", "endpoint": "https://mcp.hubspot.com/" },
+    { "id": "salesforce", "environmentPrefix": "SALESFORCE", "endpoint": "https://REPLACE-WITH-YOUR-TEST-SALESFORCE-MCP-ENDPOINT/" }
+  ],
+  "capabilities": []
+}
