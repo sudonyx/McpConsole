@@ -2,6 +2,28 @@
 
 ## Read-only chat prototype
 
+### First GenericHarness integration
+
+The explicit `harness-register` command provisions an approved fixed read to GenericHarness. It uses the existing browser OAuth setup, checks the pinned tool definition, sends the current access token directly to the trusted harness credential API, and registers a version containing the tool definition, fixed arguments, endpoint and credential-binding identity. It then adds a `harness` binding to that capability in your local configuration. No token is saved in the JSON file. Other capabilities keep their existing routing.
+
+Start GenericHarness in another terminal using its HTTP development profile. Set the same API key on both sides if using the harness API-key boundary. In the McpConsole terminal, keep the existing HubSpot OAuth environment variables and set:
+
+```powershell
+$env:HARNESS_BASE_URL = 'http://localhost:5247'
+# If a server API key is configured, enter that same key here.
+$env:HARNESS_API_KEY = [System.Net.NetworkCredential]::new(
+    '', (Read-Host 'Harness API key' -AsSecureString)
+).Password
+dotnet run -- harness-register chat.local.json hubspot.demo-companies
+dotnet run -- chat chat.local.json
+```
+
+Use the existing combined demo question. The companies read now prints a `Harness execution` ID. Query `/executions/{id}`, `/executions/{id}/attempts` and `/executions/{id}/evidence` on the harness to inspect durable state, attempts, definition-hash evidence and response hash/length. The full MCP result is returned transiently to the console for its existing calculation and local audit. It is not saved as ordinary harness evidence. The local console audit includes `_harnessExecutionId` in that returned envelope, connecting both audit trails.
+
+This first slice supports reviewed fixed reads with bearer access tokens. GenericHarness uses its existing in-memory secret provider; after a harness restart or token expiry, rerun `harness-register` to provision a current token. The same binding/version is reused when its reviewed definition and arguments are unchanged. Refresh-token lifecycle management, production secret storage, DecisionApi authorization and StateMachine recovery remain later integration steps. The harness API key currently authorizes both registration and execution; use the local test setup. This shared administrative boundary does not supply per-user or tenant permissions.
+
+The harness rejects invocation parameters/body, mismatched or disabled credentials and tool-definition drift. It does not automatically retry MCP tool calls. The first slice wraps MCP results in the existing generic `ProviderResponse` contract with normalized status 200 for successful tool results and 422 for tool errors; these values are harness outcomes rather than observed upstream HTTP statuses. Tool error content is withheld. Transport or protocol failures after invoking the tool remain Unknown.
+
 The `chat` command keeps multiple MCP connections open and sends plain text/JSON messages to a configurable Chat Completions endpoint. The model proposes a capability ID. The application checks approval, verifies the current tool-definition hash, and supplies fixed arguments from local configuration. Each capability is one reviewed read with an exact account/query/record scope. Use multiple capabilities for pagination or separate reads. No model-generated SQL, SOQL, URLs or arguments are executed.
 
 This is a single-user console prototype. Approval in the configuration is a trusted operator assertion that the exact tool and arguments are read-only and suitably scoped. Review actual behavior, including query tools that can dispatch other actions. Server annotations and model descriptions do not establish approval. Protect the configuration from untrusted edits. Returned data and questions are sent to the selected model service. Use the fictional test accounts.

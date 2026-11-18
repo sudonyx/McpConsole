@@ -9,7 +9,7 @@ using ModelContextProtocol.Client;
 
 internal sealed record ServerSettings(string Id, string EnvironmentPrefix, string Endpoint);
 internal sealed record ReadCapability(string Id, string ServerId, string Tool, string DefinitionHash,
-    string Purpose, bool ApprovedReadOnly, JsonElement Arguments);
+    string Purpose, bool ApprovedReadOnly, JsonElement Arguments, HarnessBinding? Harness = null);
 internal sealed record ChatSettings(ServerSettings[] Servers, ReadCapability[] Capabilities);
 
 internal static class ChatApp
@@ -47,7 +47,7 @@ internal static class ChatApp
         return uri;
     }
 
-    private static async Task<McpClient> ConnectAsync(ServerSettings server, CancellationToken token)
+    private static async Task<McpClient> ConnectAsync(ServerSettings server, CancellationToken token, ITokenCache? cache = null)
     {
         var prefix = server.EnvironmentPrefix;
         var redirectText = Env(prefix + "_REDIRECT_URI");
@@ -64,6 +64,7 @@ internal static class ChatApp
             ConnectionTimeout = TimeSpan.FromMinutes(5),
             OAuth = new ClientOAuthOptions
             {
+                TokenCache = cache,
                 ClientId = Env(prefix + "_CLIENT_ID"),
                 ClientSecret = Environment.GetEnvironmentVariable(prefix + "_CLIENT_SECRET"),
                 RedirectUri = redirect,
@@ -112,6 +113,28 @@ internal static class ChatApp
         settings.Capabilities.SingleOrDefault(c => c.Id == id && c.ApprovedReadOnly)
         ?? throw new InvalidOperationException("Capability is not approved.");
 
+    public static async Task<int> RegisterHarnessAsync(string path, string capabilityId, CancellationToken token)
+    {
+        var config = Load(path);
+        var capability = Authorize(config, capabilityId);
+        var server = config.Servers.Single(s => s.Id == capability.ServerId);
+        var cache = new BootstrapTokenCache();
+        await using var client = await ConnectAsync(server, token, cache);
+        var tool = (await client.ListToolsAsync(cancellationToken: token)).Single(t => t.Name == capability.Tool);
+        if (DefinitionHash(tool) != capability.DefinitionHash)
+            throw new InvalidOperationException("Discovery changed. Review the tool definition first.");
+        var grant = await cache.GetTokensAsync(token) ?? throw new InvalidOperationException("No OAuth access token was issued.");
+        var binding = await HarnessClient.RegisterAsync(capability, server,
+            JsonSerializer.SerializeToElement(tool.ProtocolTool, Json), grant.AccessToken!, token);
+        var updated = config with { Capabilities = config.Capabilities.Select(c => c.Id == capabilityId ? c with { Harness = binding } : c).ToArray() };
+        // Replace the local configuration atomically so an interrupted write leaves it usable.
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(updated, Json), token);
+        File.Move(temporary, path, overwrite: true);
+        Console.WriteLine("Registered harness capability " + capability.Id + ". Chat now routes this read through /executions.");
+        return 0;
+    }
+
     public static async Task<int> RunAsync(string configPath, CancellationToken token)
     {
         var config = Load(configPath);
@@ -127,6 +150,7 @@ internal static class ChatApp
         {
             foreach (var server in config.Servers)
             {
+                if (!approved.Any(c => c.ServerId == server.Id && c.Harness is null)) continue;
                 Console.Error.WriteLine($"Connecting {server.Id}...");
                 clients.Add(server.Id, await ConnectAsync(server, token));
             }
@@ -139,11 +163,14 @@ internal static class ChatApp
             using var audit = new ExecutionAudit(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configPath))!, "audit"), catalogSnapshot);
             var controller = new ReadController(config, async (capability, ct) =>
             {
+                // For delegated execution the harness performs the authoritative upstream hash check.
+                if (capability.Harness is not null) return capability.DefinitionHash;
                 var tools = await clients[capability.ServerId].ListToolsAsync(cancellationToken: ct);
                 var tool = tools.SingleOrDefault(t => t.Name == capability.Tool);
                 return tool is null ? null : DefinitionHash(tool);
             }, async (capability, ct) =>
             {
+                if (capability.Harness is not null) return await HarnessClient.ExecuteAsync(capability, ct);
                 Console.WriteLine($"Read {capability.Id} | catalog {catalogHash}");
                 var arguments = capability.Arguments.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
                 var result = await clients[capability.ServerId].CallToolAsync(capability.Tool, arguments, cancellationToken: ct);
