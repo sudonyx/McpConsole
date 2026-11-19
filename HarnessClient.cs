@@ -19,7 +19,7 @@ internal static class HarnessClient
     }
 
     internal static async Task<HarnessBinding> RegisterAsync(ReadCapability capability, ServerSettings server,
-        JsonElement toolDefinition, string accessToken, CancellationToken token)
+        JsonElement toolDefinition, McpBootstrapGrant grant, CancellationToken token)
     {
         using var client = Create();
         var providerId = capability.Harness?.ProviderId ?? Guid.NewGuid();
@@ -27,21 +27,20 @@ internal static class HarnessClient
         if (capability.Harness is { } existing)
         {
             bindingId = existing.CredentialBindingId;
-            using var refreshed = await client.PutAsJsonAsync($"/providers/{providerId}/credential-bindings/{bindingId}/secret",
-                new { secret = accessToken }, token);
-            refreshed.EnsureSuccessStatusCode();
         }
         else
         {
             using var created = await client.PostAsJsonAsync($"/providers/{providerId}/credential-bindings", new
             {
                 name = "mcp-" + capability.Id, scheme = 1, headerName = "Authorization",
-                secretReference = "mcp/" + Guid.NewGuid().ToString("N"), secret = accessToken
+                secretReference = "mcp/" + Guid.NewGuid().ToString("N")
             }, token);
             created.EnsureSuccessStatusCode();
             var binding = await created.Content.ReadFromJsonAsync<JsonElement>(token);
             bindingId = binding.GetProperty("id").GetGuid();
         }
+        using var connection = await client.PutAsJsonAsync($"/providers/{providerId}/credential-bindings/{bindingId}/mcp-connection", grant, token);
+        connection.EnsureSuccessStatusCode();
         using var registered = await client.PostAsJsonAsync($"/providers/{providerId}/mcp-descriptions", new
         {
             providerName = server.Id, endpoint = server.Endpoint, toolDefinition, arguments = capability.Arguments,
@@ -50,6 +49,37 @@ internal static class HarnessClient
         registered.EnsureSuccessStatusCode();
         return await registered.Content.ReadFromJsonAsync<HarnessBinding>(token)
             ?? throw new InvalidOperationException("Missing harness registration result.");
+    }
+
+    internal static async Task EnsureConnectionStoreAsync(CancellationToken token)
+    {
+        using var client = Create();
+        using var response = await client.GetAsync("/mcp-connections/storage", token);
+        if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            throw new ArgumentException("Set HARNESS_API_KEY to match the configured harness API key.");
+        if (!response.IsSuccessStatusCode) throw new ArgumentException("Update and restart the harness with Credentials__Store=ProtectedFiles before OAuth registration.");
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(token);
+        if (!body.GetProperty("persistent").GetBoolean())
+            throw new ArgumentException("Restart the harness with Credentials__Store=ProtectedFiles before OAuth registration.");
+        if (!body.GetProperty("managementProtected").GetBoolean())
+            throw new ArgumentException("Configure Harness__Boundary__ApiKeys__0 on the harness and matching HARNESS_API_KEY here before OAuth registration.");
+    }
+
+    internal static async Task<string> ConnectionAsync(ReadCapability capability, bool disconnect, CancellationToken token)
+    {
+        using var client = Create();
+        var binding = capability.Harness!;
+        var path = $"/providers/{binding.ProviderId}/credential-bindings/{binding.CredentialBindingId}/mcp-connection";
+        if (disconnect)
+        {
+            using var deleted = await client.DeleteAsync(path, token);
+            deleted.EnsureSuccessStatusCode();
+            return "Disconnected locally; provider consent is unchanged.";
+        }
+        using var response = await client.GetAsync(path, token);
+        response.EnsureSuccessStatusCode();
+        var status = await response.Content.ReadFromJsonAsync<JsonElement>(token);
+        return status.GetRawText();
     }
 
     internal static async Task<JsonElement> ExecuteAsync(ReadCapability capability, CancellationToken token)

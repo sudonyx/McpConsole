@@ -5,7 +5,7 @@ using ModelContextProtocol;
 using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
 
-const string usage = "Usage: dotnet run -- list | call TOOL [JSON_OBJECT | --json-file PATH] | discover CONFIG OUTPUT | chat CONFIG | harness-register CONFIG CAPABILITY";
+const string usage = "Usage: dotnet run -- list | call TOOL [JSON_OBJECT | --json-file PATH] | discover CONFIG OUTPUT | chat CONFIG | harness-register CONFIG CAPABILITY | harness-status CONFIG | harness-disconnect CONFIG CAPABILITY";
 if (args is [] or ["--help"])
 {
     Console.WriteLine(usage);
@@ -24,6 +24,8 @@ var json = new JsonSerializerOptions(JsonSerializerOptions.Web) { WriteIndented 
 try
 {
     if (args is ["self-test"]) return ChatApp.SelfTest();
+    if (args is ["harness-status", var statusConfig]) return await ChatApp.ConnectionCommandAsync(statusConfig, null, cancellation.Token);
+    if (args is ["harness-disconnect", var disconnectConfig, var disconnectId]) return await ChatApp.ConnectionCommandAsync(disconnectConfig, disconnectId, cancellation.Token);
     if (args is ["harness-register", var harnessConfig, var capabilityId]) return await ChatApp.RegisterHarnessAsync(harnessConfig, capabilityId, cancellation.Token);
     if (args is ["demo-summary", var capturePath]) return ChatApp.ReplayDemo(capturePath);
     if (args is ["discover", var configPath, var outputPath]) return await ChatApp.DiscoverAsync(configPath, outputPath, cancellation.Token);

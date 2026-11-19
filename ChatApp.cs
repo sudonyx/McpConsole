@@ -57,6 +57,10 @@ internal static class ChatApp
             redirect.Query.Length != 0 || redirect.Fragment.Length != 0 || redirect.UserInfo.Length != 0 ||
             redirect.AbsoluteUri != redirectText)
             throw new ArgumentException("Use a registered canonical loopback callback with an explicit port and trailing slash.");
+        HttpMessageHandler handler = new HttpClientHandler { AllowAutoRedirect = false };
+        if (cache is BootstrapTokenCache bootstrap) handler = new TokenRequestCaptureHandler(bootstrap) { InnerHandler = handler };
+        var bootstrapHttp = new HttpClient(handler);
+        var requestedScopes = Environment.GetEnvironmentVariable(prefix + "_SCOPES")?.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var transport = new HttpClientTransport(new HttpClientTransportOptions
         {
             Endpoint = Endpoint(server.Endpoint),
@@ -68,10 +72,21 @@ internal static class ChatApp
                 ClientId = Env(prefix + "_CLIENT_ID"),
                 ClientSecret = Environment.GetEnvironmentVariable(prefix + "_CLIENT_SECRET"),
                 RedirectUri = redirect,
-                Scopes = Environment.GetEnvironmentVariable(prefix + "_SCOPES")?.Split(' ', StringSplitOptions.RemoveEmptyEntries),
-                AuthorizationCallbackHandler = (context, ct) => OAuthCallback.ReceiveAsync(context.AuthorizationUri, redirect, ct)
+                Scopes = requestedScopes,
+                ScopeSelector = requestedScopes is null ? null : _ => requestedScopes,
+                AuthorizationCallbackHandler = (context, ct) =>
+                {
+                    if (cache is BootstrapTokenCache captured)
+                    {
+                        var fields = context.AuthorizationUri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(p => p.Split('=', 2)).Where(p => Uri.UnescapeDataString(p[0]) == "scope").ToArray();
+                        if (fields.Length == 1 && fields[0].Length == 2)
+                            captured.RequestedScope = Uri.UnescapeDataString(fields[0][1].Replace('+', ' '));
+                    }
+                    return OAuthCallback.ReceiveAsync(context.AuthorizationUri, redirect, ct);
+                }
             }
-        });
+        }, bootstrapHttp, ownsHttpClient: true);
         try { return await McpClient.CreateAsync(transport, cancellationToken: token); }
         catch { await transport.DisposeAsync(); throw; }
     }
@@ -118,20 +133,36 @@ internal static class ChatApp
         var config = Load(path);
         var capability = Authorize(config, capabilityId);
         var server = config.Servers.Single(s => s.Id == capability.ServerId);
+        await HarnessClient.EnsureConnectionStoreAsync(token);
         var cache = new BootstrapTokenCache();
         await using var client = await ConnectAsync(server, token, cache);
         var tool = (await client.ListToolsAsync(cancellationToken: token)).Single(t => t.Name == capability.Tool);
         if (DefinitionHash(tool) != capability.DefinitionHash)
             throw new InvalidOperationException("Discovery changed. Review the tool definition first.");
-        var grant = await cache.GetTokensAsync(token) ?? throw new InvalidOperationException("No OAuth access token was issued.");
+        var grant = cache.Export(server.Endpoint);
         var binding = await HarnessClient.RegisterAsync(capability, server,
-            JsonSerializer.SerializeToElement(tool.ProtocolTool, Json), grant.AccessToken!, token);
+            JsonSerializer.SerializeToElement(tool.ProtocolTool, Json), grant, token);
         var updated = config with { Capabilities = config.Capabilities.Select(c => c.Id == capabilityId ? c with { Harness = binding } : c).ToArray() };
         // Replace the local configuration atomically so an interrupted write leaves it usable.
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(updated, Json), token);
         File.Move(temporary, path, overwrite: true);
         Console.WriteLine("Registered harness capability " + capability.Id + ". Chat now routes this read through /executions.");
+        Console.WriteLine(grant.RefreshToken is { Length: > 0 } ? "OAuth connection saved securely; automatic refresh is available."
+            : "OAuth connection saved securely. No refresh token was issued; consent is required again when this token expires.");
+        return 0;
+    }
+
+    public static async Task<int> ConnectionCommandAsync(string path, string? disconnect, CancellationToken token)
+    {
+        var config = Load(path);
+        foreach (var capability in config.Capabilities.Where(c => c.Harness is not null && (disconnect is null || c.Id == disconnect)))
+        {
+            var status = await HarnessClient.ConnectionAsync(capability, disconnect is not null, token);
+            Console.WriteLine(capability.Id + " | " + status);
+        }
+        if (disconnect is not null && !config.Capabilities.Any(c => c.Id == disconnect && c.Harness is not null))
+            throw new ArgumentException("No harness binding exists for that capability.");
         return 0;
     }
 
@@ -367,6 +398,7 @@ internal static class ChatApp
         DemoSummaryTests.Run();
         ControllerTests.RunAsync().GetAwaiter().GetResult();
         WorkflowReadTests.RunAsync().GetAwaiter().GetResult();
+        ConnectionBootstrapTests.RunAsync().GetAwaiter().GetResult();
         return 0;
     }
 
