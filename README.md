@@ -20,13 +20,80 @@ dotnet run -- chat chat.local.json
 
 Use the existing combined demo question. The companies read now prints a `Harness execution` ID. Query `/executions/{id}`, `/executions/{id}/attempts` and `/executions/{id}/evidence` on the harness to inspect durable state, attempts, definition-hash evidence and response hash/length. The full MCP result is returned transiently to the console for its existing calculation and local audit. It is not saved as ordinary harness evidence. The local console audit includes `_harnessExecutionId` in that returned envelope, connecting both audit trails.
 
-This first slice supports reviewed fixed reads with bearer access tokens. GenericHarness uses its existing in-memory secret provider; after a harness restart or token expiry, rerun `harness-register` to provision a current token. The same binding/version is reused when its reviewed definition and arguments are unchanged. Refresh-token lifecycle management, production secret storage, DecisionApi authorization and StateMachine recovery remain later integration steps. The harness API key currently authorizes both registration and execution; use the local test setup. This shared administrative boundary does not supply per-user or tenant permissions.
+This slice supports reviewed fixed reads with bearer access tokens. GenericHarness uses its existing in-memory secret provider; after a harness restart or token expiry, rerun `harness-register` to provision a current token. The same binding/version is reused when its reviewed definition and arguments are unchanged. DecisionApi now authorizes the exact reads at the harness boundary; optional workflow chat routing is described below. Refresh-token lifecycle management and production secret storage remain future work. The harness API key currently authorizes both registration and execution; use the local test setup. This shared administrative boundary does not supply per-user or tenant permissions.
 
 The harness rejects invocation parameters/body, mismatched or disabled credentials and tool-definition drift. It does not automatically retry MCP tool calls. The first slice wraps MCP results in the existing generic `ProviderResponse` contract with normalized status 200 for successful tool results and 422 for tool errors; these values are harness outcomes rather than observed upstream HTTP statuses. Tool error content is withheld. Transport or protocol failures after invoking the tool remain Unknown.
 
 The `chat` command keeps multiple MCP connections open and sends plain text/JSON messages to a configurable Chat Completions endpoint. The model proposes a capability ID. The application checks approval, verifies the current tool-definition hash, and supplies fixed arguments from local configuration. Each capability is one reviewed read with an exact account/query/record scope. Use multiple capabilities for pagination or separate reads. No model-generated SQL, SOQL, URLs or arguments are executed.
 
 This is a single-user console prototype. Approval in the configuration is a trusted operator assertion that the exact tool and arguments are read-only and suitably scoped. Review actual behavior, including query tools that can dispatch other actions. Server annotations and model descriptions do not establish approval. Protect the configuration from untrusted edits. Returned data and questions are sent to the selected model service. Use the fictional test accounts.
+
+### Chat through the state machine
+
+Set `CHAT_EXECUTION_MODE=workflow` to use the existing `mcp-demo-reads` 1.0
+workflow. This mode requires exactly the three approved demo capabilities with
+harness bindings. The first allowed read proposal for a question starts one
+fixed companies/contacts/opportunities workflow; later read proposals for that
+question use its verified in-memory results. Even a narrower question triggers
+the full fixed demo plan. The model cannot change that plan, its arguments, or
+the workflow's transitions. A refusal does not start a workflow.
+
+Keep the harness and DecisionApi running. In a separate PowerShell terminal:
+
+```powershell
+cd C:\Users\joshw\code\KyoPrep\StateMachine
+$env:ASPNETCORE_URLS = 'http://localhost:5271'
+$env:DURABLE_STATE_MACHINE_DB = "$env:TEMP\mcp-chat-workflow.db"
+$env:DURABLE_STATE_MACHINE_TRUSTED_INGESTION_KEY = [System.Net.NetworkCredential]::new(
+    '', (Read-Host 'Local workflow ingestion key' -AsSecureString)
+).Password
+dotnet run --project src\DurableStateMachine.Api --no-launch-profile
+```
+
+In the McpConsole terminal, retain your normal model settings and set the same
+workflow ingestion key (this is separate from the harness/DecisionApi key):
+
+```powershell
+$env:CHAT_EXECUTION_MODE = 'workflow'
+$env:DURABLE_STATE_MACHINE_API_URL = 'http://localhost:5271/'
+$env:HARNESS_BASE_URL = 'http://localhost:5247/'
+$env:DURABLE_STATE_MACHINE_TRUSTED_INGESTION_KEY = [System.Net.NetworkCredential]::new(
+    '', (Read-Host 'Same local workflow ingestion key' -AsSecureString)
+).Password
+dotnet run -- chat chat.local.json
+```
+
+Ask the combined demo question. Chat prints the workflow ID, journal path and
+outcome, then calculates the existing deterministic summary. Before releasing
+results it verifies the harness's response-body hash/length against its durable
+evidence and waits for all three accepted workflow transitions. Each result is
+attributed to both `_harnessExecutionId` and `_workflowInstanceId`. Workflow audit
+events link the chat request, journal, capabilities and executions.
+
+Blocked, failed or unresolved workflows produce no combined answer and do not
+fall back to direct execution. Missing transient results also stop the answer;
+recovering an execution does not recover the original CRM body. A later proposal
+in the same question cannot create a replacement workflow. A new user question
+is a new workflow/read request. Use the saved journal to investigate interrupted
+work before deliberately requesting another read.
+
+Journals live under `audit/workflows/request-<request-id>.local.json`; they store
+metadata and staged observations, not CRM bodies or keys. The existing console
+audit still records CRM results locally; protect it as before. Workflow resume
+and inspection are documented in
+`../StateMachine/docs/mcp-workflow-integration.md`. Setting
+`CHAT_EXECUTION_MODE=harness` (or leaving it unset) retains the previous routing.
+Workflow mode never silently switches to that path when a service is unavailable.
+
+Validation: console self-tests and 34 relevant StateMachine tests passed (15 MCP
+workflow tests plus existing input-boundary and harness tests). A live chat
+routing check used a local scripted model with the real HubSpot and Salesforce
+reads: workflow `mcp-c0a60d160f154855babdc9b0ed66c790` completed three transitions,
+with one allowed harness attempt per capability. The deterministic summary
+matched DEMO-001 at 24,000 and DEMO-004 at 60,000. This verifies orchestration and
+calculation, not the prose of a live frontier-model response. Earlier full-suite
+testing reported two existing Asteria process-test failures, recorded in the
+StateMachine integration guide.
 
 ### Connect and discover
 

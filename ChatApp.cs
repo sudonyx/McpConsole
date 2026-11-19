@@ -139,6 +139,19 @@ internal static class ChatApp
     {
         var config = Load(configPath);
         var approved = config.Capabilities.Where(c => c.ApprovedReadOnly).ToArray();
+        var workflowMode = Environment.GetEnvironmentVariable("CHAT_EXECUTION_MODE") switch
+        {
+            null or "harness" => false,
+            "workflow" => true,
+            _ => throw new ArgumentException("CHAT_EXECUTION_MODE must be harness or workflow.")
+        };
+        if (workflowMode)
+        {
+            WorkflowReads.Validate(config);
+            DurableStateMachine.McpClient.McpRun.ValidateUrl(Env("DURABLE_STATE_MACHINE_API_URL"));
+            DurableStateMachine.McpClient.McpRun.ValidateUrl(Env("HARNESS_BASE_URL"));
+            _ = Env("DURABLE_STATE_MACHINE_TRUSTED_INGESTION_KEY");
+        }
         if (approved.Length == 0) throw new ArgumentException("Review discovery and approve at least one fixed read capability first.");
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(2) };
         var modelEndpoint = Endpoint(Env("CHAT_MODEL_ENDPOINT"), allowLoopback: true);
@@ -161,6 +174,7 @@ internal static class ChatApp
             }, Json);
             var catalogHash = Hash(catalogSnapshot);
             using var audit = new ExecutionAudit(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configPath))!, "audit"), catalogSnapshot);
+            WorkflowReads? workflowReads = null;
             var controller = new ReadController(config, async (capability, ct) =>
             {
                 // For delegated execution the harness performs the authoritative upstream hash check.
@@ -170,6 +184,7 @@ internal static class ChatApp
                 return tool is null ? null : DefinitionHash(tool);
             }, async (capability, ct) =>
             {
+                if (workflowMode) return await (workflowReads ?? throw new InvalidOperationException("Missing request workflow.")).ReadAsync(capability, ct);
                 if (capability.Harness is not null) return await HarnessClient.ExecuteAsync(capability, ct);
                 Console.WriteLine($"Read {capability.Id} | catalog {catalogHash}");
                 var arguments = capability.Arguments.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
@@ -190,8 +205,9 @@ internal static class ChatApp
                 "Six returned opportunities do not imply missing data. If complete is false qualify conclusions using the supplied notes. " +
                 "Available capabilities: " + JsonSerializer.Serialize(catalog, Json);
             var messages = new List<object> { new { role = "system", content = system } };
-            audit.Write(null, "SessionStarted", new { model, modelEndpoint, systemPrompt = system });
+            audit.Write(null, "SessionStarted", new { model, modelEndpoint, systemPrompt = system, executionMode = workflowMode ? "workflow" : "harness" });
             Console.WriteLine("Local execution records: " + audit.Path);
+            Console.WriteLine("Execution mode: " + (workflowMode ? "workflow (three fixed demo reads per read request)" : "existing harness/direct routing"));
             Console.WriteLine("Chat ready. /exit to quit, /clear to clear history. CRM results are sent to the configured model.");
             while (!token.IsCancellationRequested)
             {
@@ -208,6 +224,9 @@ internal static class ChatApp
                 if (question.Length > 8000 || JsonSerializer.Serialize(messages).Length > 150000)
                 { Console.WriteLine("Conversation limit reached. Use /clear or shorten the question."); continue; }
                 var requestId = Guid.NewGuid();
+                workflowReads = workflowMode ? new WorkflowReads(config,
+                    Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configPath))!, "audit", "workflows"),
+                    requestId, audit.Write, WorkflowReads.ExecuteAsync) : null;
                 audit.Write(requestId, "RequestStarted", new { question });
                 messages.Add(new { role = "user", content = question });
                 var demoMode = DemoSummary.Sources.All(id => approved.Any(c => c.Id == id));
@@ -289,6 +308,7 @@ internal static class ChatApp
                     Console.WriteLine(ex switch
                     {
                         ModelRequestException => "Request stopped. " + ex.Message,
+                        WorkflowReadException => "Request stopped. " + ex.Message,
                         HttpRequestException httpError => "Request stopped. HTTP/network failure" +
                             (httpError.StatusCode is { } status ? $" ({(int)status})" : " before an HTTP status was received") +
                             ". Check connectivity and the configured endpoints.",
@@ -346,6 +366,7 @@ internal static class ChatApp
         Console.WriteLine("Passed approved-read, denied-capability, argument-injection, duplicate-field and definition-hash checks.");
         DemoSummaryTests.Run();
         ControllerTests.RunAsync().GetAwaiter().GetResult();
+        WorkflowReadTests.RunAsync().GetAwaiter().GetResult();
         return 0;
     }
 
