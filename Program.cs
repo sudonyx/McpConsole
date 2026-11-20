@@ -56,7 +56,7 @@ try
         endpoint.Scheme != "https" || endpoint.UserInfo.Length != 0 || endpoint.Fragment.Length != 0)
         throw new ArgumentException("MCP_ENDPOINT must be an HTTPS endpoint without user info or a fragment.");
 
-    var redirectValue = Environment.GetEnvironmentVariable("MCP_REDIRECT_URI")
+    var redirectValue = RuntimeSettings.Get("MCP_REDIRECT_URI")
         ?? "http://localhost:8765/oauth/callback/";
     if (!Uri.TryCreate(redirectValue, UriKind.Absolute, out var redirect) ||
         redirect.Scheme != "http" || redirect.Host is not ("localhost" or "127.0.0.1") ||
@@ -69,9 +69,9 @@ try
     var oauth = new ClientOAuthOptions
     {
         ClientId = Required("MCP_CLIENT_ID"),
-        ClientSecret = Environment.GetEnvironmentVariable("MCP_CLIENT_SECRET"),
+        ClientSecret = RuntimeSettings.Get("MCP_CLIENT_SECRET"),
         RedirectUri = redirect,
-        Scopes = Environment.GetEnvironmentVariable("MCP_SCOPES")
+        Scopes = RuntimeSettings.Get("MCP_SCOPES")
             ?.Split(' ', StringSplitOptions.RemoveEmptyEntries),
         AuthorizationCallbackHandler = (context, token) =>
             OAuthCallback.ReceiveAsync(context.AuthorizationUri, redirect, token)
@@ -127,5 +127,5 @@ catch (Exception ex)
 }
 
 static string Required(string name) =>
-    Environment.GetEnvironmentVariable(name) is { } value && !string.IsNullOrWhiteSpace(value)
+    RuntimeSettings.Get(name) is { } value && !string.IsNullOrWhiteSpace(value)
         ? value : throw new ArgumentException($"Set {name} before running the client.");

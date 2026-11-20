@@ -2,6 +2,15 @@
 
 ## Read-only chat prototype
 
+### Repeatable local setup
+
+The recommended entry point is `local.ps1 setup` once, then `local.ps1 start`.
+It saves per-service settings outside the repositories, protects secrets with
+Windows user encryption, generates matching internal keys, checks readiness and
+opens workflow chat. See [Local setup](./LocalSetup/README.md) for commands,
+configuration files, data-path preservation and limitations. The manual commands
+below remain available for individual development checks.
+
 ### First GenericHarness integration
 
 The explicit `harness-register` command provisions an approved fixed read to GenericHarness. It uses browser OAuth, checks the pinned tool definition, sends the negotiated OAuth grant directly to the trusted harness credential API, and registers a version containing the tool definition, fixed arguments, endpoint and credential-binding identity. It then adds a `harness` binding to that capability in your local configuration. No token is saved in the JSON file. Other capabilities keep their existing routing.

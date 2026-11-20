@@ -35,8 +35,8 @@ internal static class ChatApp
         return settings;
     }
 
-    private static string Env(string name) => Environment.GetEnvironmentVariable(name)
-        is { Length: > 0 } value ? value : throw new ArgumentException($"Set {name} before running chat.");
+    private static string Env(string name) => RuntimeSettings.Get(name)
+        is { Length: > 0 } value ? value : throw new ArgumentException($"Configure {name} in local setup/settings or the environment.");
 
     private static Uri Endpoint(string value, bool allowLoopback = false)
     {
@@ -60,7 +60,7 @@ internal static class ChatApp
         HttpMessageHandler handler = new HttpClientHandler { AllowAutoRedirect = false };
         if (cache is BootstrapTokenCache bootstrap) handler = new TokenRequestCaptureHandler(bootstrap) { InnerHandler = handler };
         var bootstrapHttp = new HttpClient(handler);
-        var requestedScopes = Environment.GetEnvironmentVariable(prefix + "_SCOPES")?.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var requestedScopes = RuntimeSettings.Get(prefix + "_SCOPES")?.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var transport = new HttpClientTransport(new HttpClientTransportOptions
         {
             Endpoint = Endpoint(server.Endpoint),
@@ -70,7 +70,7 @@ internal static class ChatApp
             {
                 TokenCache = cache,
                 ClientId = Env(prefix + "_CLIENT_ID"),
-                ClientSecret = Environment.GetEnvironmentVariable(prefix + "_CLIENT_SECRET"),
+                ClientSecret = RuntimeSettings.Get(prefix + "_CLIENT_SECRET"),
                 RedirectUri = redirect,
                 Scopes = requestedScopes,
                 ScopeSelector = requestedScopes is null ? null : _ => requestedScopes,
@@ -170,7 +170,7 @@ internal static class ChatApp
     {
         var config = Load(configPath);
         var approved = config.Capabilities.Where(c => c.ApprovedReadOnly).ToArray();
-        var workflowMode = Environment.GetEnvironmentVariable("CHAT_EXECUTION_MODE") switch
+        var workflowMode = RuntimeSettings.Get("CHAT_EXECUTION_MODE") switch
         {
             null or "harness" => false,
             "workflow" => true,
@@ -187,7 +187,7 @@ internal static class ChatApp
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(2) };
         var modelEndpoint = Endpoint(Env("CHAT_MODEL_ENDPOINT"), allowLoopback: true);
         var model = Env("CHAT_MODEL");
-        var key = Environment.GetEnvironmentVariable("CHAT_MODEL_API_KEY");
+        var key = RuntimeSettings.Get("CHAT_MODEL_API_KEY");
         if (!string.IsNullOrEmpty(key)) http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
         var clients = new Dictionary<string, McpClient>();
         try

@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="LocalSetup/**/*.cs" />
+    <Compile Include="LocalSetup/Shared/LocalSettings.cs" Link="LocalConfiguration/LocalSettings.cs" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\StateMachine\clients\DurableStateMachine.McpClient\DurableStateMachine.McpClient.csproj" />
     <PackageReference Include="ModelContextProtocol.Core" Version="2.3.1" />
   </ItemGroup>

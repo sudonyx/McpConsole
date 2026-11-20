@@ -8,12 +8,12 @@ internal static class HarnessClient
 {
     private static HttpClient Create()
     {
-        var address = Environment.GetEnvironmentVariable("HARNESS_BASE_URL");
+        var address = RuntimeSettings.Get("HARNESS_BASE_URL");
         if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 ||
             uri.Fragment.Length != 0 || (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback)))
             throw new ArgumentException("Set HARNESS_BASE_URL to your trusted HTTPS or local loopback harness URL.");
         var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = uri };
-        var key = Environment.GetEnvironmentVariable("HARNESS_API_KEY");
+        var key = RuntimeSettings.Get("HARNESS_API_KEY");
         if (!string.IsNullOrEmpty(key)) client.DefaultRequestHeaders.Add("X-Harness-Api-Key", key);
         return client;
     }

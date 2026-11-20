@@ -26,9 +26,9 @@ internal sealed class WorkflowReads(ChatSettings settings, string directory, Gui
         if (!started)
         {
             started = true;
-            var workflowUrl = Environment.GetEnvironmentVariable("DURABLE_STATE_MACHINE_API_URL")
+            var workflowUrl = RuntimeSettings.Get("DURABLE_STATE_MACHINE_API_URL")
                 ?? throw new ArgumentException("Set DURABLE_STATE_MACHINE_API_URL for workflow chat.");
-            var harnessUrl = Environment.GetEnvironmentVariable("HARNESS_BASE_URL")
+            var harnessUrl = RuntimeSettings.Get("HARNESS_BASE_URL")
                 ?? throw new ArgumentException("Set HARNESS_BASE_URL for workflow chat.");
             var run = McpRun.Create(JsonSerializer.Serialize(settings, ChatApp.Json), workflowUrl, harnessUrl);
             Directory.CreateDirectory(directory);
@@ -78,14 +78,14 @@ internal sealed class WorkflowReads(ChatSettings settings, string directory, Gui
     internal static async Task<string> ExecuteAsync(string path, McpRun run,
         Action<ReadStep, JsonElement> receive, CancellationToken token)
     {
-        var key = Environment.GetEnvironmentVariable("DURABLE_STATE_MACHINE_TRUSTED_INGESTION_KEY");
+        var key = RuntimeSettings.Get("DURABLE_STATE_MACHINE_TRUSTED_INGESTION_KEY");
         if (string.IsNullOrWhiteSpace(key)) throw new ArgumentException("Set DURABLE_STATE_MACHINE_TRUSTED_INGESTION_KEY for workflow chat.");
         using var workflow = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
             { BaseAddress = new Uri(run.WorkflowUrl), Timeout = TimeSpan.FromSeconds(60) };
         using var harness = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
             { BaseAddress = new Uri(run.HarnessUrl), Timeout = TimeSpan.FromSeconds(60) };
         workflow.DefaultRequestHeaders.Add("X-State-Machine-Trusted-Ingestion-Key", key);
-        var harnessKey = Environment.GetEnvironmentVariable("HARNESS_API_KEY");
+        var harnessKey = RuntimeSettings.Get("HARNESS_API_KEY");
         if (!string.IsNullOrWhiteSpace(harnessKey)) harness.DefaultRequestHeaders.Add("X-Harness-Api-Key", harnessKey);
         return await new McpCoordinator(workflow, harness).ResumeAsync(path, run, token, receive);
     }
