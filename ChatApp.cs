@@ -166,7 +166,8 @@ internal static class ChatApp
         return 0;
     }
 
-    public static async Task<int> RunAsync(string configPath, CancellationToken token)
+    public static async Task<int> RunAsync(string configPath, CancellationToken token,
+        HttpClient? modelClient = null, TimeSpan? modelTimeout = null)
     {
         var config = Load(configPath);
         var approved = config.Capabilities.Where(c => c.ApprovedReadOnly).ToArray();
@@ -184,11 +185,17 @@ internal static class ChatApp
             _ = Env("DURABLE_STATE_MACHINE_TRUSTED_INGESTION_KEY");
         }
         if (approved.Length == 0) throw new ArgumentException("Review discovery and approve at least one fixed read capability first.");
-        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(2) };
+        using var ownedModelClient = modelClient is null
+            ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan }
+            : null;
+        var http = modelClient ?? ownedModelClient!;
         var modelEndpoint = Endpoint(Env("CHAT_MODEL_ENDPOINT"), allowLoopback: true);
         var model = Env("CHAT_MODEL");
-        var key = RuntimeSettings.Get("CHAT_MODEL_API_KEY");
-        if (!string.IsNullOrEmpty(key)) http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        if (modelClient is null)
+        {
+            var key = RuntimeSettings.Get("CHAT_MODEL_API_KEY");
+            if (!string.IsNullOrEmpty(key)) http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        }
         var clients = new Dictionary<string, McpClient>();
         try
         {
@@ -268,7 +275,11 @@ internal static class ChatApp
                     var answered = false;
                     for (var step = 0; step < 8; step++)
                     {
-                        var proposal = await ProposeAsync(http, modelEndpoint, model, messages, token);
+                        audit.Write(requestId, "ModelRequestStarted", new { round = step + 1 });
+                        var modelTimer = System.Diagnostics.Stopwatch.StartNew();
+                        var proposal = await ModelRequestDeadline.RunAsync(
+                            ct => ProposeAsync(http, modelEndpoint, model, messages, ct), token, modelTimeout);
+                        audit.Write(requestId, "ModelRequestCompleted", new { round = step + 1, elapsedMilliseconds = modelTimer.ElapsedMilliseconds });
                         messages.Add(new { role = "assistant", content = proposal.GetRawText() });
                         var reply = await controller.HandleAsync(requestId, proposal, token);
                         if (reply.Kind == "refusal")
@@ -326,6 +337,13 @@ internal static class ChatApp
                         audit.Write(requestId, "RequestLimitReached", new { maximumRounds = 8 });
                         Console.WriteLine("Read limit reached. Ask a narrower question.");
                     }
+                }
+                catch (ModelRequestTimeoutException ex)
+                {
+                    audit.Write(requestId, "ModelRequestTimedOut", new { timeoutSeconds = ex.TimeoutSeconds,
+                        readResultsReturned = readResults.Keys.ToArray(), automaticallyRetried = false });
+                    Console.WriteLine("Model request timed out. This answer was stopped; chat is still open. Completed workflow records are preserved.");
+                    messages.RemoveRange(1, messages.Count - 1);
                 }
                 catch (OperationCanceledException)
                 {
@@ -399,6 +417,7 @@ internal static class ChatApp
         ControllerTests.RunAsync().GetAwaiter().GetResult();
         WorkflowReadTests.RunAsync().GetAwaiter().GetResult();
         ConnectionBootstrapTests.RunAsync().GetAwaiter().GetResult();
+        ModelTimeoutTests.RunAsync().GetAwaiter().GetResult();
         return 0;
     }
 

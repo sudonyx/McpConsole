@@ -2,6 +2,17 @@
 
 ## Read-only chat prototype
 
+Model requests have a two-minute deadline covering response headers and body.
+A model timeout stops only the current answer, clears the conversation context
+and returns to the prompt; chat and launcher-owned services stay running.
+Completed workflow/execution evidence is preserved, and no model or CRM request
+is automatically retried. A new question is a new request and may perform fresh
+approved reads. Ctrl+C/session cancellation retains the existing shutdown path.
+Audit events `ModelRequestStarted`, `ModelRequestCompleted` and
+`ModelRequestTimedOut` distinguish model delays from workflow failures and
+`RequestCancelled`. Model completion events include elapsed time; timeout records
+do not retain remote exception text or credentials.
+
 ### Repeatable local setup
 
 The recommended entry point is `local.ps1 setup` once, then `local.ps1 start`.
